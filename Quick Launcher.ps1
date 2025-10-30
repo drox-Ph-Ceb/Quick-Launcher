@@ -40,7 +40,6 @@ function Refresh-IconSizes {
     $panel.PerformLayout()
 }
 
-# ====== ADD ICON FUNCTION ======
 function Add-LauncherIcon($path, $customName = $null) {
     if ([string]::IsNullOrWhiteSpace($path)) { return }
 
@@ -86,15 +85,61 @@ function Add-LauncherIcon($path, $customName = $null) {
 
     # Label
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = $displayName
-    if ($label.Text.Length -gt 10) { $label.Text = $label.Text.Substring(0, 9) + "..." }
+    $label.Text = if ($displayName.Length -gt 10) { $displayName.Substring(0, 9) + "..." } else { $displayName }
     $label.Font = New-Object System.Drawing.Font("Segoe UI", [Math]::Max(6, [Math]::Round($global:iconSize / 6)))
     $label.Location = New-Object System.Drawing.Point(0, $global:iconSize)
     $label.Width = $panelItem.Width
     $label.TextAlign = 'MiddleCenter'
     $panelItem.Controls.Add($label)
 
-    # Left click = launch
+    # ====== PANEL + ICON HOVER EFFECT ======
+    $pic.Add_MouseEnter({
+        param($sender, $e)
+        $panel = $sender.Parent
+        $newSize = $global:iconSize + 15
+
+        # Resize panel
+        $panel.Width = $newSize + 20
+        $panel.Height = $newSize + 35
+
+        # Resize icon
+        $sender.Size = New-Object System.Drawing.Size($newSize, $newSize)
+
+        # Center icon
+        $sender.Location = New-Object System.Drawing.Point(
+            [math]::Floor(($panel.Width - $newSize)/2),
+            0
+        )
+
+        # Adjust label
+        $label = $panel.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
+        if ($label) {
+            $label.Location = New-Object System.Drawing.Point(0, $newSize)
+            $label.Width = $panel.Width
+        }
+    })
+
+    $pic.Add_MouseLeave({
+        param($sender, $e)
+        $panel = $sender.Parent
+
+        # Reset panel
+        $panel.Width = $global:iconSize + 20
+        $panel.Height = $global:iconSize + 35
+
+        # Reset icon
+        $sender.Size = New-Object System.Drawing.Size($global:iconSize, $global:iconSize)
+        $sender.Location = New-Object System.Drawing.Point(0,0)
+
+        # Reset label
+        $label = $panel.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
+        if ($label) {
+            $label.Location = New-Object System.Drawing.Point(0, $global:iconSize)
+            $label.Width = $panel.Width
+        }
+    })
+
+    # ====== LEFT CLICK = Launch ======
     $pic.Add_MouseClick({
         param($sender, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -105,7 +150,7 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
 
-    # Right click = remove
+    # ====== RIGHT CLICK = Remove ======
     $pic.Add_MouseUp({
         param($sender, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
@@ -124,7 +169,7 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
 
-    # Add to panel & save
+    # ====== Add to panel & save ======
     try {
         $panel.Controls.Add($panelItem)
         [void]$global:entries.Add($entry)
@@ -180,6 +225,7 @@ $form.Controls.Add($addFileBtn)
 # ====== ICON SIZE SLIDER ======
 $sizeLabel = New-Object System.Windows.Forms.Label
 $sizeLabel.Text = "Icon Size:"
+$sizeLabel.AutoSize = $true
 $sizeLabel.Location = New-Object System.Drawing.Point(550, 22)
 $form.Controls.Add($sizeLabel)
 
@@ -214,43 +260,15 @@ if (Test-Path $jsonPath) {
     }
 }
 
-
 # ====== ICON SIZE SLIDER & LABEL ======
-
-# Remove old slider if it already exists (avoids duplicate)
-if ($sizeSlider) { 
-    $form.Controls.Remove($sizeSlider)
-}
-if ($sizeLabel) { 
-    $form.Controls.Remove($sizeLabel)
-}
-
-# Create label
-$sizeLabel = New-Object System.Windows.Forms.Label
 $sizeLabel.Text = "Icon Size: $($global:iconSize)"
-$sizeLabel.AutoSize = $true
-$sizeLabel.Location = New-Object System.Drawing.Point(20, 20)
-$form.Controls.Add($sizeLabel)
-
-# Create single slider
-$sizeSlider = New-Object System.Windows.Forms.TrackBar
-$sizeSlider.Minimum = 20
-$sizeSlider.Maximum = 100
 $sizeSlider.Value = $global:iconSize
-$sizeSlider.TickFrequency = 10
-$sizeSlider.Location = New-Object System.Drawing.Point(540, 20)
-$sizeSlider.Width = 150
-$form.Controls.Add($sizeSlider)
-
-# Event: when slider changes
 $sizeSlider.Add_ValueChanged({
     $global:iconSize = $sizeSlider.Value
-    $sizeLabel.Text = "Icon Size: $($global:iconSize)"   # update label
+    $sizeLabel.Text = "Icon Size: $($global:iconSize)"
     Refresh-IconSizes
     Save-Entries
 })
-
-
 
 # ====== BUTTON ACTIONS ======
 $addFileBtn.Add_Click({
