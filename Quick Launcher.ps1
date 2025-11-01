@@ -223,12 +223,13 @@ function Add-LauncherIcon($path, $customName = $null) {
     } catch {}
 }
 
-# ====== FORM UI SETUP ======
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Quick Launcher - by drox-Ph-Ceb    Gcash no. 0945-1035-299"
 $form.Size = New-Object System.Drawing.Size(797, 500)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
+$form.FormBorderStyle = 'Sizable'     #Allow resizing
+$form.MinimumSize = New-Object System.Drawing.Size(600, 400)  # optional
 
 $panel = New-Object System.Windows.Forms.FlowLayoutPanel
 $panel.Location = New-Object System.Drawing.Point(20, 80)
@@ -237,7 +238,15 @@ $panel.WrapContents = $true
 $panel.AutoScroll = $true
 $panel.FlowDirection = 'LeftToRight'
 $panel.BorderStyle = 'FixedSingle'
+$panel.Anchor = 'Top, Left, Right, Bottom'   #Expand with form
 $form.Controls.Add($panel)
+
+# ====== AUTO-ADJUST PANEL WIDTH ON RESIZE ======
+$form.Add_Resize({
+    $panel.Width = $form.ClientSize.Width - 40
+    $panel.Height = $form.ClientSize.Height - 110
+})
+
 
 # ====== URL BOX ======
 $urlBox = New-Object System.Windows.Forms.TextBox
