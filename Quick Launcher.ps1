@@ -2,11 +2,31 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic
 
+# Import ExtractIconEx from shell32.dll (for real yellow folder icon)
+Add-Type -Namespace Win32 -Name IconExtractor -MemberDefinition @"
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+    public static extern int ExtractIconEx(string lpszFile, int nIconIndex, out System.IntPtr phiconLarge, out System.IntPtr phiconSmall, int nIcons);
+"@
+
+function Get-FolderIcon {
+    $largePtr = [IntPtr]::Zero
+    $smallPtr = [IntPtr]::Zero
+    [void][Win32.IconExtractor]::ExtractIconEx("$env:SystemRoot\System32\shell32.dll", 4, [ref]$largePtr, [ref]$smallPtr, 1)
+    if ($largePtr -ne [IntPtr]::Zero) {
+        return [System.Drawing.Icon]::FromHandle($largePtr)
+    } else {
+        return [System.Drawing.SystemIcons]::Folder
+    }
+}
+
 # ====== PATH & GLOBAL VARS ======
 $jsonPath = Join-Path $env:TEMP 'launcher.json'
 $global:iconSize = 40
 $global:entries = New-Object System.Collections.ArrayList
 $global:isLoading = $false
+$script:dragging = $false
+$script:dragPanel = $null
+$script:dragStart = [System.Drawing.Point]::Empty
 
 # ====== SAVE FUNCTION ======
 function Save-Entries {
@@ -40,10 +60,10 @@ function Refresh-IconSizes {
     $panel.PerformLayout()
 }
 
+# ====== ADD ICON FUNCTION ======
 function Add-LauncherIcon($path, $customName = $null) {
     if ([string]::IsNullOrWhiteSpace($path)) { return }
 
-    # Prevent duplicates (only when not loading)
     if (-not $global:isLoading) {
         if ($global:entries | Where-Object { $_.Path -eq $path }) {
             [System.Windows.Forms.MessageBox]::Show("This entry already exists.","Duplicate","OK","Information")
@@ -51,7 +71,6 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     }
 
-    # Ask for custom name if not provided
     if (-not $customName) {
         $defaultName = if ($path -match '^https?://') { $path } else { [System.IO.Path]::GetFileNameWithoutExtension($path) }
         $customName = [Microsoft.VisualBasic.Interaction]::InputBox("Enter a custom name:","Custom Name",$defaultName)
@@ -61,29 +80,34 @@ function Add-LauncherIcon($path, $customName = $null) {
     $displayName = [System.IO.Path]::GetFileNameWithoutExtension($customName)
     $entry = [PSCustomObject]@{ Path = $path; Name = $displayName }
 
-    # Panel item
     $panelItem = New-Object System.Windows.Forms.Panel
     $panelItem.Width = $global:iconSize + 20
     $panelItem.Height = $global:iconSize + 35
     $panelItem.Tag = $path
+    $panelItem.BackColor = [System.Drawing.Color]::FromArgb(245, 250, 255)
 
-    # Icon
+    # ====== ICON ======
     $pic = New-Object System.Windows.Forms.PictureBox
     $pic.Size = New-Object System.Drawing.Size($global:iconSize, $global:iconSize)
     $pic.SizeMode = 'StretchImage'
-    $pic.Image = if ($path -match '^https?://') {
-        [System.Drawing.SystemIcons]::Information.ToBitmap()
+
+    if ($path -match '^https?://') {
+        $pic.Image = [System.Drawing.SystemIcons]::Information.ToBitmap()
+    } elseif (Test-Path $path -PathType Container) {
+        $folderIcon = Get-FolderIcon
+        $pic.Image = $folderIcon.ToBitmap()
     } elseif (Test-Path $path) {
-        try { [System.Drawing.Icon]::ExtractAssociatedIcon($path).ToBitmap() }
-        catch { [System.Drawing.SystemIcons]::Application.ToBitmap() }
+        try { $pic.Image = [System.Drawing.Icon]::ExtractAssociatedIcon($path).ToBitmap() }
+        catch { $pic.Image = [System.Drawing.SystemIcons]::Application.ToBitmap() }
     } else {
-        [System.Drawing.SystemIcons]::Application.ToBitmap()
+        $pic.Image = [System.Drawing.SystemIcons]::Application.ToBitmap()
     }
+
     $pic.Location = New-Object System.Drawing.Point(0, 0)
     $pic.Tag = $path
     $panelItem.Controls.Add($pic)
 
-    # Label
+    # ====== LABEL ======
     $label = New-Object System.Windows.Forms.Label
     $label.Text = if ($displayName.Length -gt 10) { $displayName.Substring(0, 9) + "..." } else { $displayName }
     $label.Font = New-Object System.Drawing.Font("Segoe UI", [Math]::Max(6, [Math]::Round($global:iconSize / 6)))
@@ -92,54 +116,77 @@ function Add-LauncherIcon($path, $customName = $null) {
     $label.TextAlign = 'MiddleCenter'
     $panelItem.Controls.Add($label)
 
-    # ====== PANEL + ICON HOVER EFFECT ======
+    # ====== DRAG TO REARRANGE ======
+    $panelItem.Add_MouseDown({
+        param($sender, $e)
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            $script:dragging = $true
+            $script:dragStart = $e.Location
+            $script:dragPanel = $sender
+            $sender.BringToFront()
+        }
+    })
+
+    $panelItem.Add_MouseMove({
+        param($sender, $e)
+        if ($script:dragging -and $script:dragPanel -eq $sender) {
+            $panel.SuspendLayout()
+            $dx = $e.X - $script:dragStart.X
+            $dy = $e.Y - $script:dragStart.Y
+            $sender.Left += $dx
+            $sender.Top += $dy
+            $panel.ResumeLayout()
+        }
+    })
+
+    $panelItem.Add_MouseUp({
+        param($sender, $e)
+        if ($script:dragging) {
+            $script:dragging = $false
+
+            # Snap to grid-like positions and reorder
+            $items = @($panel.Controls | Where-Object { $_ -is [System.Windows.Forms.Panel] })
+            $sorted = $items | Sort-Object { $_.Top * 10000 + $_.Left }
+            $panel.Controls.Clear()
+            foreach ($item in $sorted) { $panel.Controls.Add($item) }
+
+            # Save new order
+            $global:entries = New-Object System.Collections.ArrayList
+            foreach ($ctrl in $panel.Controls) {
+                $path = $ctrl.Tag
+                $name = ($ctrl.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }).Text
+                [void]$global:entries.Add([PSCustomObject]@{ Path = $path; Name = $name })
+            }
+            Save-Entries
+            $panel.PerformLayout()
+        }
+    })
+
+    # ====== HOVER EFFECT ======
     $pic.Add_MouseEnter({
         param($sender, $e)
         $panel = $sender.Parent
         $newSize = $global:iconSize + 15
-
-        # Resize panel
         $panel.Width = $newSize + 20
         $panel.Height = $newSize + 35
-
-        # Resize icon
         $sender.Size = New-Object System.Drawing.Size($newSize, $newSize)
-
-        # Center icon
-        $sender.Location = New-Object System.Drawing.Point(
-            [math]::Floor(($panel.Width - $newSize)/2),
-            0
-        )
-
-        # Adjust label
+        $sender.Location = New-Object System.Drawing.Point([math]::Floor(($panel.Width - $newSize)/2), 0)
         $label = $panel.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
-        if ($label) {
-            $label.Location = New-Object System.Drawing.Point(0, $newSize)
-            $label.Width = $panel.Width
-        }
+        if ($label) { $label.Location = New-Object System.Drawing.Point(0, $newSize) }
     })
 
     $pic.Add_MouseLeave({
         param($sender, $e)
         $panel = $sender.Parent
-
-        # Reset panel
         $panel.Width = $global:iconSize + 20
         $panel.Height = $global:iconSize + 35
-
-        # Reset icon
         $sender.Size = New-Object System.Drawing.Size($global:iconSize, $global:iconSize)
         $sender.Location = New-Object System.Drawing.Point(0,0)
-
-        # Reset label
         $label = $panel.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
-        if ($label) {
-            $label.Location = New-Object System.Drawing.Point(0, $global:iconSize)
-            $label.Width = $panel.Width
-        }
+        if ($label) { $label.Location = New-Object System.Drawing.Point(0, $global:iconSize) }
     })
 
-    # ====== LEFT CLICK = Launch ======
+    # ====== CLICK ACTION ======
     $pic.Add_MouseClick({
         param($sender, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
@@ -150,26 +197,23 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
 
-    # ====== RIGHT CLICK = Remove ======
+    # ====== RIGHT-CLICK DELETE ======
     $pic.Add_MouseUp({
         param($sender, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
-            try {
-                $displayName = ($global:entries | Where-Object { $_.Path -eq $sender.Tag }).Name
-                $confirm = [System.Windows.Forms.MessageBox]::Show("Remove '$displayName'?", "Confirm Delete", [System.Windows.Forms.MessageBoxButtons]::YesNo)
-                if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-                    $panel.Controls.Remove($sender.Parent)
-                    $remaining = @($global:entries | Where-Object { $_.Path -ne $sender.Tag })
-                    $global:entries = New-Object System.Collections.ArrayList
-                    foreach ($r in $remaining) { [void]$global:entries.Add($r) }
-                    Save-Entries
-                    $panel.PerformLayout()
-                }
-            } catch {}
+            $displayName = ($global:entries | Where-Object { $_.Path -eq $sender.Tag }).Name
+            $confirm = [System.Windows.Forms.MessageBox]::Show("Remove '$displayName'?", "Confirm Delete", [System.Windows.Forms.MessageBoxButtons]::YesNo)
+            if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+                $panel.Controls.Remove($sender.Parent)
+                $remaining = @($global:entries | Where-Object { $_.Path -ne $sender.Tag })
+                $global:entries = New-Object System.Collections.ArrayList
+                foreach ($r in $remaining) { [void]$global:entries.Add($r) }
+                Save-Entries
+                $panel.PerformLayout()
+            }
         }
     })
 
-    # ====== Add to panel & save ======
     try {
         $panel.Controls.Add($panelItem)
         [void]$global:entries.Add($entry)
@@ -177,18 +221,16 @@ function Add-LauncherIcon($path, $customName = $null) {
     } catch {}
 }
 
-# ====== FORM ======
+# ====== FORM UI SETUP ======
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Quick Launcher - by drox-Ph-Ceb    Gcash no. 0945-1035-299"
-$form.Size = New-Object System.Drawing.Size(720, 500)
+$form.Size = New-Object System.Drawing.Size(797, 500)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
-$form.Add_FormClosed({ $form.Dispose() })
 
-# ====== PANEL ======
 $panel = New-Object System.Windows.Forms.FlowLayoutPanel
 $panel.Location = New-Object System.Drawing.Point(20, 80)
-$panel.Size = New-Object System.Drawing.Size(660, 370)
+$panel.Size = New-Object System.Drawing.Size(740, 370)
 $panel.WrapContents = $true
 $panel.AutoScroll = $true
 $panel.FlowDirection = 'LeftToRight'
@@ -207,7 +249,7 @@ $form.Controls.Add($urlBox)
 $urlBox.Add_GotFocus({ if ($urlBox.ForeColor -eq 'Gray') { $urlBox.Text = ""; $urlBox.ForeColor = 'Black' } })
 $urlBox.Add_LostFocus({ if ([string]::IsNullOrWhiteSpace($urlBox.Text)) { $urlBox.Text = "Enter URL here..."; $urlBox.ForeColor = 'Gray' } })
 
-# ====== BUTTONS ======
+# ====== BUTTONS WITH COLORS ======
 $addUrlBtn = New-Object System.Windows.Forms.Button
 $addUrlBtn.Text = "Add URL"
 $addUrlBtn.Location = New-Object System.Drawing.Point(350, 18)
@@ -219,61 +261,45 @@ $addFileBtn = New-Object System.Windows.Forms.Button
 $addFileBtn.Text = "Add File"
 $addFileBtn.Location = New-Object System.Drawing.Point(450, 18)
 $addFileBtn.Size = New-Object System.Drawing.Size(90, 30)
-$addFileBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 140)
+$addFileBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 160)
 $form.Controls.Add($addFileBtn)
 
-# ====== ICON SIZE SLIDER ======
+$addFolderBtn = New-Object System.Windows.Forms.Button
+$addFolderBtn.Text = "Add Folder"
+$addFolderBtn.Location = New-Object System.Drawing.Point(550, 18)
+$addFolderBtn.Size = New-Object System.Drawing.Size(90, 30)
+$addFolderBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 255, 180)
+$form.Controls.Add($addFolderBtn)
+
+# ====== SLIDER LABEL ======
 $sizeLabel = New-Object System.Windows.Forms.Label
-$sizeLabel.Text = "Icon Size:"
+$sizeLabel.Text = "Icon Size: $($global:iconSize)"
 $sizeLabel.AutoSize = $true
-$sizeLabel.Location = New-Object System.Drawing.Point(550, 22)
+$sizeLabel.Location = New-Object System.Drawing.Point(650, 22)
+$sizeLabel.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
 $form.Controls.Add($sizeLabel)
 
+# ====== ICON SIZE SLIDER ======
 $sizeSlider = New-Object System.Windows.Forms.TrackBar
-$sizeSlider.Location = New-Object System.Drawing.Point(610, 15)
-$sizeSlider.Width = 80
+$sizeSlider.Location = New-Object System.Drawing.Point(710, 10)
+$sizeSlider.Width = 60
 $sizeSlider.Minimum = 32
 $sizeSlider.Maximum = 96
 $sizeSlider.Value = $global:iconSize
 $sizeSlider.TickFrequency = 8
+$sizeSlider.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
 $form.Controls.Add($sizeSlider)
 
-# ====== LOAD JSON ======
-if (Test-Path $jsonPath) {
-    try {
-        $panel.Controls.Clear()  # Clear existing icons
-        $global:entries.Clear()  # Clear current list
-
-        $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
-        if ($data.IconSize) { $global:iconSize = [int]$data.IconSize }
-
-        $global:isLoading = $true
-        foreach ($entry in $data.Entries) {
-            Add-LauncherIcon $entry.Path $entry.Name  # Add only through function
-        }
-        $global:isLoading = $false
-        Refresh-IconSizes
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Launcher data corrupted. Resetting.","Error","OK","Error")
-        $panel.Controls.Clear()
-        $global:entries = New-Object System.Collections.ArrayList
+# ====== BUTTON LOGIC ======
+$addFolderBtn.Add_Click({
+    $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    if ($folderDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        Add-LauncherIcon $folderDialog.SelectedPath
     }
-}
-
-# ====== ICON SIZE SLIDER & LABEL ======
-$sizeLabel.Text = "Icon Size: $($global:iconSize)"
-$sizeSlider.Value = $global:iconSize
-$sizeSlider.Add_ValueChanged({
-    $global:iconSize = $sizeSlider.Value
-    $sizeLabel.Text = "Icon Size: $($global:iconSize)"
-    Refresh-IconSizes
-    Save-Entries
 })
 
-# ====== BUTTON ACTIONS ======
 $addFileBtn.Add_Click({
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
-    $ofd.Title = "Select a file"
     if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         Add-LauncherIcon $ofd.FileName
     }
@@ -290,5 +316,22 @@ $addUrlBtn.Add_Click({
 
 $urlBox.Add_KeyDown({ if ($_.KeyCode -eq "Enter") { $addUrlBtn.PerformClick() } })
 
+$sizeSlider.Add_ValueChanged({
+    $global:iconSize = $sizeSlider.Value
+    $sizeLabel.Text = "Icon Size: $($global:iconSize)"
+    Refresh-IconSizes
+    Save-Entries
+})
+
+# ====== LOAD DATA ======
+if (Test-Path $jsonPath) {
+    $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
+    if ($data.IconSize) { $global:iconSize = [int]$data.IconSize }
+    $global:isLoading = $true
+    foreach ($entry in $data.Entries) { Add-LauncherIcon $entry.Path $entry.Name }
+    $global:isLoading = $false
+    Refresh-IconSizes
+}
+
 # ====== SHOW FORM ======
-try { [void]$form.ShowDialog() } catch {}
+[void]$form.ShowDialog()
