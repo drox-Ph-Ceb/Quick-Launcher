@@ -9,7 +9,6 @@ Add-Type -Namespace Win32 -Name IconExtractor -MemberDefinition @"
 "@
 
 function Get-FolderIcon {
-    # Use the original stable folder icon extraction
     $largeIconPtr = [IntPtr]::Zero
     $smallIconPtr = [IntPtr]::Zero
     [Win32.IconExtractor]::ExtractIconEx("$env:SystemRoot\System32\shell32.dll", 4, [ref]$largeIconPtr, [ref]$smallIconPtr, 1) | Out-Null
@@ -20,30 +19,32 @@ function Get-FolderIcon {
     }
 }
 
-# ====== PATH & GLOBAL VARS ======
+# ====== GLOBALS ======
 $jsonPath = Join-Path $env:TEMP 'launcher.json'
 $global:iconSize = 40
 $global:entries = New-Object System.Collections.ArrayList
 $global:isLoading = $false
+$global:isDarkMode = $false
 $script:dragging = $false
 $script:dragPanel = $null
 $script:dragStart = [System.Drawing.Point]::Empty
 $tooltip = New-Object System.Windows.Forms.ToolTip
 
-# ====== SAVE FUNCTION (atomic write) ======
+# ====== SAVE FUNCTION ======
 function Save-Entries {
     try {
         $data = [PSCustomObject]@{
-            IconSize = $global:iconSize
-            Entries  = @($global:entries)
+            IconSize  = $global:iconSize
+            Entries   = @($global:entries)
+            IsDarkMode = $global:isDarkMode
         }
         $temp = "$jsonPath.tmp"
         $data | ConvertTo-Json -Compress | Set-Content -Path $temp -Encoding UTF8 -ErrorAction SilentlyContinue
-        Move-Item -Force $temp $jsonPath
+        Move-Item -Force $temp $jsonPath -ErrorAction SilentlyContinue
     } catch {}
 }
 
-# ====== REFRESH ICON SIZES ======
+# ====== ICON SIZE REFRESH ======
 function Refresh-IconSizes {
     foreach ($ctrl in $panel.Controls) {
         if ($ctrl -is [System.Windows.Forms.Panel]) {
@@ -86,9 +87,8 @@ function Add-LauncherIcon($path, $customName = $null) {
     $panelItem.Width = $global:iconSize + 20
     $panelItem.Height = $global:iconSize + 35
     $panelItem.Tag = $path
-    $panelItem.BackColor = [System.Drawing.Color]::FromArgb(245, 250, 255)
+    $panelItem.BackColor = if ($global:isDarkMode) { [System.Drawing.Color]::FromArgb(70,70,70) } else { [System.Drawing.Color]::FromArgb(245, 250, 255) }
 
-    # ====== ICON ======
     $pic = New-Object System.Windows.Forms.PictureBox
     $pic.Size = New-Object System.Drawing.Size($global:iconSize, $global:iconSize)
     $pic.SizeMode = 'StretchImage'
@@ -110,18 +110,18 @@ function Add-LauncherIcon($path, $customName = $null) {
     $tooltip.SetToolTip($pic, $path)
     $panelItem.Controls.Add($pic)
 
-    # ====== LABEL ======
     $label = New-Object System.Windows.Forms.Label
     $label.Text = if ($displayName.Length -gt 10) { $displayName.Substring(0, 9) + "..." } else { $displayName }
     $label.Font = New-Object System.Drawing.Font("Segoe UI", [Math]::Max(6, [Math]::Round($global:iconSize / 6)))
     $label.Location = New-Object System.Drawing.Point(0, $global:iconSize)
     $label.Width = $panelItem.Width
     $label.TextAlign = 'MiddleCenter'
+    $label.ForeColor = if ($global:isDarkMode) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
     $panelItem.Controls.Add($label)
 
-    # ====== DRAG TO REARRANGE ======
+    # Drag and rearrange logic
     $panelItem.Add_MouseDown({
-        param($sender, $e)
+        param($sender,$e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             $script:dragging = $true
             $script:dragStart = $e.Location
@@ -130,7 +130,7 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
     $panelItem.Add_MouseMove({
-        param($sender, $e)
+        param($sender,$e)
         if ($script:dragging -and $script:dragPanel -eq $sender) {
             $panel.SuspendLayout()
             $dx = $e.X - $script:dragStart.X
@@ -141,7 +141,7 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
     $panelItem.Add_MouseUp({
-        param($sender, $e)
+        param($sender,$e)
         if ($script:dragging) {
             $script:dragging = $false
             $items = @($panel.Controls | Where-Object { $_ -is [System.Windows.Forms.Panel] })
@@ -161,36 +161,32 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
 
-    # ====== HOVER EFFECT ======
+    # Hover effect
     $pic.Add_MouseEnter({
-        param($sender, $e)
-        $panel.SuspendLayout()
+        param($sender,$e)
         $parent = $sender.Parent
         $newSize = $global:iconSize + 15
         $parent.Width = $newSize + 20
         $parent.Height = $newSize + 35
         $sender.Size = New-Object System.Drawing.Size($newSize, $newSize)
         $sender.Location = New-Object System.Drawing.Point([math]::Floor(($parent.Width - $newSize)/2), 0)
-        $label = $parent.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
-        if ($label) { $label.Location = New-Object System.Drawing.Point(0, $newSize) }
-        $panel.ResumeLayout()
+        $lbl = $parent.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
+        if ($lbl) { $lbl.Location = New-Object System.Drawing.Point(0, $newSize) }
     })
     $pic.Add_MouseLeave({
-        param($sender, $e)
-        $panel.SuspendLayout()
+        param($sender,$e)
         $parent = $sender.Parent
         $parent.Width = $global:iconSize + 20
         $parent.Height = $global:iconSize + 35
         $sender.Size = New-Object System.Drawing.Size($global:iconSize, $global:iconSize)
         $sender.Location = New-Object System.Drawing.Point(0,0)
-        $label = $parent.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
-        if ($label) { $label.Location = New-Object System.Drawing.Point(0, $global:iconSize) }
-        $panel.ResumeLayout()
+        $lbl = $parent.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] }
+        if ($lbl) { $lbl.Location = New-Object System.Drawing.Point(0, $global:iconSize) }
     })
 
-    # ====== CLICK ACTION ======
+    # Click to open
     $pic.Add_MouseClick({
-        param($sender, $e)
+        param($sender,$e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             try {
                 if ($sender.Tag -match '^https?://') { Start-Process $sender.Tag }
@@ -199,9 +195,9 @@ function Add-LauncherIcon($path, $customName = $null) {
         }
     })
 
-    # ====== RIGHT-CLICK DELETE ======
+    # Right-click delete
     $pic.Add_MouseUp({
-        param($sender, $e)
+        param($sender,$e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
             $displayName = ($global:entries | Where-Object { $_.Path -eq $sender.Tag }).Name
             $confirm = [System.Windows.Forms.MessageBox]::Show("Remove '$displayName'?", "Confirm Delete", [System.Windows.Forms.MessageBoxButtons]::YesNo)
@@ -211,7 +207,6 @@ function Add-LauncherIcon($path, $customName = $null) {
                 $global:entries = New-Object System.Collections.ArrayList
                 foreach ($r in $remaining) { [void]$global:entries.Add($r) }
                 Save-Entries
-                $panel.PerformLayout()
             }
         }
     })
@@ -223,82 +218,182 @@ function Add-LauncherIcon($path, $customName = $null) {
     } catch {}
 }
 
+# ====== FORM ======
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Quick Launcher - by drox-Ph-Ceb    Gcash no. 0945-1035-299"
-$form.Size = New-Object System.Drawing.Size(797, 500)
+$form.Size = New-Object System.Drawing.Size(797,500)
 $form.StartPosition = "CenterScreen"
-$form.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
-$form.FormBorderStyle = 'Sizable'     #Allow resizing
-$form.MinimumSize = New-Object System.Drawing.Size(600, 400)  # optional
+$form.FormBorderStyle = 'Sizable'
+$form.MinimumSize = New-Object System.Drawing.Size(600,400)
 
+# ====== PANEL ======
 $panel = New-Object System.Windows.Forms.FlowLayoutPanel
-$panel.Location = New-Object System.Drawing.Point(20, 80)
-$panel.Size = New-Object System.Drawing.Size(740, 370)
+$panel.Location = New-Object System.Drawing.Point(20,80)
+$panel.Size = New-Object System.Drawing.Size(740,370)
 $panel.WrapContents = $true
 $panel.AutoScroll = $true
 $panel.FlowDirection = 'LeftToRight'
 $panel.BorderStyle = 'FixedSingle'
-$panel.Anchor = 'Top, Left, Right, Bottom'   #Expand with form
+$panel.Anchor = 'Top,Left,Right,Bottom'
 $form.Controls.Add($panel)
 
-# ====== AUTO-ADJUST PANEL WIDTH ON RESIZE ======
+# ====== SAFE RESIZE EVENT ======
 $form.Add_Resize({
-    $panel.Width = $form.ClientSize.Width - 40
-    $panel.Height = $form.ClientSize.Height - 110
+    try {
+        $w = $form.ClientSize.Width
+        $h = $form.ClientSize.Height
+
+        # fallback if somehow $w or $h is null
+        if (-not $w) { $w = 797 }
+        if (-not $h) { $h = 500 }
+
+        $panel.Width = $w - 40
+        $panel.Height = $h - 110
+
+        if ($themeCheckBox) {
+            $themeCheckBox.Location = New-Object System.Drawing.Point($w - 130, 22)
+        }
+    } catch {}
 })
 
-
-# ====== URL BOX ======
+# ====== INPUT + BUTTONS ======
 $urlBox = New-Object System.Windows.Forms.TextBox
-$urlBox.Location = New-Object System.Drawing.Point(20, 20)
+$urlBox.Location = New-Object System.Drawing.Point(20,20)
 $urlBox.Width = 320
 $urlBox.Font = 'Segoe UI,10'
 $urlBox.ForeColor = 'Gray'
 $urlBox.Text = "Enter URL here..."
 $form.Controls.Add($urlBox)
-
 $urlBox.Add_GotFocus({ if ($urlBox.ForeColor -eq 'Gray') { $urlBox.Text = ""; $urlBox.ForeColor = 'Black' } })
 $urlBox.Add_LostFocus({ if ([string]::IsNullOrWhiteSpace($urlBox.Text)) { $urlBox.Text = "Enter URL here..."; $urlBox.ForeColor = 'Gray' } })
 
-# ====== BUTTONS ======
 $addUrlBtn = New-Object System.Windows.Forms.Button
 $addUrlBtn.Text = "Add URL"
-$addUrlBtn.Location = New-Object System.Drawing.Point(350, 18)
-$addUrlBtn.Size = New-Object System.Drawing.Size(90, 30)
-$addUrlBtn.BackColor = [System.Drawing.Color]::FromArgb(200, 220, 255)
+$addUrlBtn.Location = New-Object System.Drawing.Point(350,18)
+$addUrlBtn.Size = New-Object System.Drawing.Size(90,30)
 $form.Controls.Add($addUrlBtn)
 
 $addFileBtn = New-Object System.Windows.Forms.Button
 $addFileBtn.Text = "Add File"
-$addFileBtn.Location = New-Object System.Drawing.Point(450, 18)
-$addFileBtn.Size = New-Object System.Drawing.Size(90, 30)
-$addFileBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 160)
+$addFileBtn.Location = New-Object System.Drawing.Point(450,18)
+$addFileBtn.Size = New-Object System.Drawing.Size(90,30)
 $form.Controls.Add($addFileBtn)
 
 $addFolderBtn = New-Object System.Windows.Forms.Button
 $addFolderBtn.Text = "Add Folder"
-$addFolderBtn.Location = New-Object System.Drawing.Point(550, 18)
-$addFolderBtn.Size = New-Object System.Drawing.Size(90, 30)
-$addFolderBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 255, 180)
+$addFolderBtn.Location = New-Object System.Drawing.Point(550,18)
+$addFolderBtn.Size = New-Object System.Drawing.Size(90,30)
 $form.Controls.Add($addFolderBtn)
 
-# ====== SLIDER ======
 $sizeLabel = New-Object System.Windows.Forms.Label
 $sizeLabel.Text = "Icon Size: $($global:iconSize)"
 $sizeLabel.AutoSize = $true
-$sizeLabel.Location = New-Object System.Drawing.Point(650, 22)
-$sizeLabel.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+$sizeLabel.Location = New-Object System.Drawing.Point(650,22)
 $form.Controls.Add($sizeLabel)
 
 $sizeSlider = New-Object System.Windows.Forms.TrackBar
-$sizeSlider.Location = New-Object System.Drawing.Point(710, 10)
+$sizeSlider.Location = New-Object System.Drawing.Point(710,10)
 $sizeSlider.Width = 60
 $sizeSlider.Minimum = 32
 $sizeSlider.Maximum = 96
 $sizeSlider.Value = $global:iconSize
 $sizeSlider.TickFrequency = 8
-$sizeSlider.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
 $form.Controls.Add($sizeSlider)
+
+# ====== THEME CHECKBOX ======
+$themeCheckBox = New-Object System.Windows.Forms.CheckBox
+$themeCheckBox.Text = "Dark Mode"
+$themeCheckBox.Font = New-Object System.Drawing.Font("Segoe UI",7,[System.Drawing.FontStyle]::Italic)
+$themeCheckBox.AutoSize = $true
+
+# Place above all other controls (top-left), e.g., x=20, y=18
+$themeCheckBox.Location = New-Object System.Drawing.Point(8,2)
+$themeCheckBox.Anchor = 'Top,Left'
+
+# Add to form first so it stays on top-left
+$form.Controls.Add($themeCheckBox)
+$themeCheckBox.BringToFront()
+
+# ====== CHECKBOX EVENT ======
+$themeCheckBox.Add_CheckedChanged({
+    $global:isDarkMode = $themeCheckBox.Checked
+    Apply-Theme $global:isDarkMode
+})
+
+
+# ====== APPLY THEME FUNCTION ======
+function Apply-Theme {
+    param([bool]$dark)
+
+    if ($dark) {
+        $form.BackColor = [System.Drawing.Color]::FromArgb(40,40,50)
+        $panel.BackColor = [System.Drawing.Color]::FromArgb(60,60,70)
+        $urlBox.BackColor = [System.Drawing.Color]::FromArgb(70,70,80)
+        $urlBox.ForeColor = 'White'
+
+        $addUrlBtn.BackColor = [System.Drawing.Color]::FromArgb(70,90,120)
+        $addUrlBtn.ForeColor = 'White'
+
+        $addFileBtn.BackColor = [System.Drawing.Color]::FromArgb(120,90,70)
+        $addFileBtn.ForeColor = 'White'
+
+        $addFolderBtn.BackColor = [System.Drawing.Color]::FromArgb(90,120,90)
+        $addFolderBtn.ForeColor = 'White'
+
+        $sizeSlider.BackColor = [System.Drawing.Color]::FromArgb(40,40,50)
+        $sizeLabel.ForeColor = 'White'
+
+        $themeCheckBox.ForeColor = 'White'
+        $themeCheckBox.Checked = $true
+
+        foreach ($ctrl in $panel.Controls) {
+            if ($ctrl -is [System.Windows.Forms.Panel]) {
+                $ctrl.BackColor = [System.Drawing.Color]::FromArgb(70,70,70)
+                foreach ($sub in $ctrl.Controls) {
+                    if ($sub -is [System.Windows.Forms.Label]) { $sub.ForeColor = [System.Drawing.Color]::White }
+                }
+            }
+        }
+    } else {
+        $form.BackColor = [System.Drawing.Color]::FromArgb(230,240,250)
+        $panel.BackColor = [System.Drawing.Color]::FromArgb(245,250,255)
+        $urlBox.BackColor = 'White'
+        $urlBox.ForeColor = 'Black'
+
+        $addUrlBtn.BackColor = [System.Drawing.Color]::FromArgb(200,220,255)
+        $addUrlBtn.ForeColor = 'Black'
+
+        $addFileBtn.BackColor = [System.Drawing.Color]::FromArgb(255,220,160)
+        $addFileBtn.ForeColor = 'Black'
+
+        $addFolderBtn.BackColor = [System.Drawing.Color]::FromArgb(180,255,180)
+        $addFolderBtn.ForeColor = 'Black'
+
+        $sizeSlider.BackColor = [System.Drawing.Color]::FromArgb(230,240,250)
+        $sizeLabel.ForeColor = [System.Drawing.Color]::FromArgb(60,60,60)
+
+        $themeCheckBox.ForeColor = 'Black'
+        $themeCheckBox.Checked = $false
+
+        foreach ($ctrl in $panel.Controls) {
+            if ($ctrl -is [System.Windows.Forms.Panel]) {
+                $ctrl.BackColor = [System.Drawing.Color]::FromArgb(245,250,255)
+                foreach ($sub in $ctrl.Controls) {
+                    if ($sub -is [System.Windows.Forms.Label]) { $sub.ForeColor = [System.Drawing.Color]::Black }
+                }
+            }
+        }
+    }
+
+    # Save dark mode setting
+    Save-Entries
+}
+
+# ====== CHECKBOX EVENT ======
+$themeCheckBox.Add_CheckedChanged({
+    $global:isDarkMode = $themeCheckBox.Checked
+    Apply-Theme $global:isDarkMode
+})
 
 # ====== BUTTON LOGIC ======
 $addFolderBtn.Add_Click({
@@ -321,7 +416,7 @@ $addUrlBtn.Add_Click({
         $urlBox.ForeColor = 'Gray'
     }
 })
-$urlBox.Add_KeyDown({ if ($_.KeyCode -eq "Enter") { $addUrlBtn.PerformClick() } })
+$urlBox.Add_KeyDown({ param($s,$e) if ($e.KeyCode -eq "Enter") { $addUrlBtn.PerformClick() } })
 $sizeSlider.Add_ValueChanged({
     $global:iconSize = $sizeSlider.Value
     $sizeLabel.Text = "Icon Size: $($global:iconSize)"
@@ -329,42 +424,57 @@ $sizeSlider.Add_ValueChanged({
     Save-Entries
 })
 
-# ====== DRAG-DROP SUPPORT + VISUAL HIGHLIGHT ======
+# ====== DRAG-DROP ======
 $panel.AllowDrop = $true
 $panel.Add_DragEnter({
-    param($sender, $e)
-    $e.Effect = 'Copy'
-    $sender.BackColor = [System.Drawing.Color]::FromArgb(210, 235, 255)
-    $sender.BorderStyle = 'Fixed3D'
+    param($s,$e)
+    $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
+    $s.BackColor = [System.Drawing.Color]::FromArgb(210,235,255)
+    $s.BorderStyle = 'Fixed3D'
 })
 $panel.Add_DragLeave({
-    param($sender, $e)
-    $sender.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
-    $sender.BorderStyle = 'FixedSingle'
+    param($s,$e)
+    $s.BackColor = if ($global:isDarkMode) { [System.Drawing.Color]::FromArgb(60,60,70) } else { [System.Drawing.Color]::FromArgb(230,240,250) }
+    $s.BorderStyle = 'FixedSingle'
 })
 $panel.Add_DragDrop({
-    param($sender, $e)
-    $sender.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 250)
-    $sender.BorderStyle = 'FixedSingle'
-    $data = $e.Data
-    if ($data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {
-        $files = $data.GetData([Windows.Forms.DataFormats]::FileDrop)
-        foreach ($file in $files) { Add-LauncherIcon $file }
-    } elseif ($data.GetDataPresent([Windows.Forms.DataFormats]::Text)) {
-        $text = $data.GetData([Windows.Forms.DataFormats]::Text)
-        if ($text -match '^https?://') { Add-LauncherIcon $text }
+    param($s,$e)
+    $s.BackColor = if ($global:isDarkMode) { [System.Drawing.Color]::FromArgb(60,60,70) } else { [System.Drawing.Color]::FromArgb(230,240,250) }
+    $s.BorderStyle = 'FixedSingle'
+    if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {
+        $files = $e.Data.GetData([Windows.Forms.DataFormats]::FileDrop)
+        foreach ($f in $files) { Add-LauncherIcon $f }
+    } elseif ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::Text)) {
+        $t = $e.Data.GetData([Windows.Forms.DataFormats]::Text)
+        if ($t -match '^https?://') { Add-LauncherIcon $t }
     }
 })
 
-# ====== LOAD DATA ======
+# ====== LOAD EXISTING ======
 if (Test-Path $jsonPath) {
-    $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
-    if ($data.IconSize) { $global:iconSize = [int]$data.IconSize }
-    $global:isLoading = $true
-    foreach ($entry in $data.Entries) { Add-LauncherIcon $entry.Path $entry.Name }
-    $global:isLoading = $false
-    Refresh-IconSizes
+    try {
+        $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
+        if ($null -ne $data.IconSize) {
+            $global:iconSize = [int]$data.IconSize
+            $sizeSlider.Value = $global:iconSize
+            $sizeLabel.Text = "Icon Size: $($global:iconSize)"
+        }
+        if ($null -ne $data.IsDarkMode) {
+            $global:isDarkMode = [bool]$data.IsDarkMode
+        }
+        $global:isLoading = $true
+        if ($data.Entries) {
+            foreach ($e in $data.Entries) { Add-LauncherIcon $e.Path $e.Name }
+        }
+        $global:isLoading = $false
+        Apply-Theme $global:isDarkMode
+    } catch {
+        $global:isLoading = $false
+        Apply-Theme $global:isDarkMode
+    }
+} else {
+    Apply-Theme $global:isDarkMode
 }
 
-# ====== SHOW FORM ======
+# ====== RUN FORM ======
 [void]$form.ShowDialog()
