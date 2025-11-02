@@ -185,15 +185,21 @@ function Add-LauncherIcon($path, $customName = $null) {
     })
 
     # Click to open
-    $pic.Add_MouseClick({
-        param($sender,$e)
-        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-            try {
-                if ($sender.Tag -match '^https?://') { Start-Process $sender.Tag }
-                elseif (Test-Path $sender.Tag) { Start-Process $sender.Tag }
-            } catch {}
-        }
-    })
+$pic.Add_MouseClick({
+    param($sender,$e)
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        try {
+            if ($sender.Tag -match '^https?://') {
+                Start-Process $sender.Tag
+            }
+            elseif (Test-Path $sender.Tag) {
+                $filePath = $sender.Tag
+                $folderPath = [System.IO.Path]::GetDirectoryName($filePath)
+                Start-Process -FilePath $filePath -WorkingDirectory $folderPath
+            }
+        } catch {}
+    }
+})
 
     # Right-click delete
     $pic.Add_MouseUp({
