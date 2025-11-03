@@ -30,19 +30,53 @@ $script:dragPanel = $null
 $script:dragStart = [System.Drawing.Point]::Empty
 $tooltip = New-Object System.Windows.Forms.ToolTip
 
-# ====== SAVE FUNCTION ======
 function Save-Entries {
     try {
         $data = [PSCustomObject]@{
-            IconSize  = $global:iconSize
-            Entries   = @($global:entries)
+            IconSize   = $global:iconSize
+            Entries    = @($global:entries)
             IsDarkMode = $global:isDarkMode
         }
+
+        # Main JSON in TEMP
         $temp = "$jsonPath.tmp"
         $data | ConvertTo-Json -Compress | Set-Content -Path $temp -Encoding UTF8 -ErrorAction SilentlyContinue
         Move-Item -Force $temp $jsonPath -ErrorAction SilentlyContinue
-    } catch {}
+
+        # Backup JSON in Documents
+        $documents = [Environment]::GetFolderPath("MyDocuments")
+        $backupPath = [System.IO.Path]::Combine($documents, "launcher_backup.json")
+        $backupEntries = @()
+
+        if (Test-Path $backupPath) {
+            try {
+                $existing = Get-Content $backupPath -Raw | ConvertFrom-Json
+                if ($existing.Entries) { $backupEntries = @($existing.Entries) }
+            } catch {}
+        }
+
+        # Merge current entries with backup entries without duplicates by Path
+        foreach ($entry in $global:entries) {
+            if (-not ($backupEntries | Where-Object { $_.Path -eq $entry.Path })) {
+                $backupEntries += $entry
+            }
+        }
+
+        # Save backup JSON
+        $backupData = [PSCustomObject]@{
+            IconSize   = $global:iconSize
+            Entries    = $backupEntries
+            IsDarkMode = $global:isDarkMode
+        }
+        $backupTemp = "$backupPath.tmp"
+        $backupData | ConvertTo-Json -Compress | Set-Content -Path $backupTemp -Encoding UTF8 -ErrorAction SilentlyContinue
+        Move-Item -Force $backupTemp $backupPath -ErrorAction SilentlyContinue
+
+    } catch {
+        Write-Error "Failed to save entries or backup: $_"
+    }
 }
+
 
 # ====== ICON SIZE REFRESH ======
 function Refresh-IconSizes {
@@ -226,7 +260,7 @@ $pic.Add_MouseClick({
 
 # ====== FORM ======
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Quick Launcher - by drox-Ph-Ceb    Gcash no. 0945-1035-299"
+$form.Text = "Quick Launcher"
 $form.Size = New-Object System.Drawing.Size(797,500)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = 'Sizable'
@@ -261,6 +295,70 @@ $form.Add_Resize({
         }
     } catch {}
 })
+
+# ====== VERTICAL FACEBOOK LABEL ON PANEL LEFT EDGE ======
+$fbLabel = New-Object System.Windows.Forms.Label
+$fbLabel.Text = "Facebook"
+$fbLabel.BackColor = [System.Drawing.Color]::FromArgb(24,119,242)
+$fbLabel.ForeColor = [System.Drawing.Color]::White
+$fbLabel.Font = New-Object System.Drawing.Font("Segoe UI",8,[System.Drawing.FontStyle]::Bold)
+$fbLabel.Width = 17
+$fbLabel.Height = 55
+$fbLabel.TextAlign = 'MiddleCenter'
+$fbLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+# Custom Paint event to rotate text vertically
+$fbLabel.Add_Paint({
+    param($sender,$e)
+    $e.Graphics.Clear($sender.BackColor)
+    $e.Graphics.TranslateTransform(0, $sender.Height)
+    $e.Graphics.RotateTransform(-90)
+    $e.Graphics.DrawString($sender.Text, $sender.Font, [System.Drawing.Brushes]::White, 0, 0)
+})
+
+# Align with panel left edge
+$form.Add_Shown({
+    $fbLabel.Location = New-Object System.Drawing.Point(0, $panel.Top)
+})
+
+# Keep aligned when resizing
+$form.Add_Resize({
+    $fbLabel.Location = New-Object System.Drawing.Point(0, $panel.Top)
+})
+
+# Click opens Facebook
+$fbLabel.Add_Click({
+    Start-Process "https://www.facebook.com/jairah.mazo.5"
+})
+
+$form.Controls.Add($fbLabel)
+$fbLabel.BringToFront()
+
+# ====== VERTICAL DONATION LABEL BELOW FACEBOOK ======
+$donationLabel = New-Object System.Windows.Forms.Label
+$donationLabel.Text = "For Donation: Gcash# 0945-1035-299"
+$donationLabel.BackColor = [System.Drawing.Color]::FromArgb(184, 134, 11)
+$donationLabel.ForeColor = [System.Drawing.Color]::White
+$donationLabel.Font = New-Object System.Drawing.Font("Segoe UI",8,[System.Drawing.FontStyle]::Italic)
+$donationLabel.Width = 16
+$donationLabel.Height = 187
+$donationLabel.TextAlign = 'MiddleCenter'
+
+# Rotate text vertically
+$donationLabel.Add_Paint({
+    param($sender,$e)
+    $e.Graphics.Clear($sender.BackColor)
+    $e.Graphics.TranslateTransform(0, $sender.Height)
+    $e.Graphics.RotateTransform(-90)
+    $e.Graphics.DrawString($sender.Text, $sender.Font, [System.Drawing.Brushes]::White, 0, 0)
+})
+
+# Fixed position below Facebook button
+$donationLabel.Location = New-Object System.Drawing.Point(2, 146)  # X=0, Y=25 (adjust as needed)
+
+$form.Controls.Add($donationLabel)
+$donationLabel.BringToFront()
+
 
 # ====== INPUT + BUTTONS ======
 $urlBox = New-Object System.Windows.Forms.TextBox
@@ -456,7 +554,15 @@ $panel.Add_DragDrop({
     }
 })
 
-# ====== LOAD EXISTING ======
+# ====== LOAD EXISTING OR AUTO-RESTORE FROM BACKUP ======
+$documents = [Environment]::GetFolderPath("MyDocuments")
+$backupPath = [System.IO.Path]::Combine($documents, "launcher_backup.json")
+
+if ((-not (Test-Path $jsonPath)) -and (Test-Path $backupPath)) {
+    # Copy backup to TEMP if main JSON is missing
+    Copy-Item -Path $backupPath -Destination $jsonPath -Force
+}
+
 if (Test-Path $jsonPath) {
     try {
         $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
@@ -481,6 +587,5 @@ if (Test-Path $jsonPath) {
 } else {
     Apply-Theme $global:isDarkMode
 }
-
 # ====== RUN FORM ======
 [void]$form.ShowDialog()
