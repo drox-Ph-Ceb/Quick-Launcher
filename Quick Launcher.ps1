@@ -1,3 +1,4 @@
+#created by drox-Ph-Ceb
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic
@@ -589,3 +590,4 @@ if (Test-Path $jsonPath) {
 }
 # ====== RUN FORM ======
 [void]$form.ShowDialog()
+
