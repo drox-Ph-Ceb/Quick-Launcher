@@ -489,6 +489,45 @@ function Apply-Theme {
             }
         }
     }
+	
+	# ====== REFRESH BUTTON ======
+$refreshBtn = New-Object System.Windows.Forms.Button
+$refreshBtn.Text = "Refresh"
+$refreshBtn.Location = New-Object System.Drawing.Point(0.7, 50)
+$refreshBtn.Size = New-Object System.Drawing.Size(90, 25)
+$form.Controls.Add($refreshBtn)
+
+$refreshBtn.Add_Click({
+    try {
+        # Delete temp JSON
+        if (Test-Path $jsonPath) {
+            Remove-Item $jsonPath -Force -ErrorAction SilentlyContinue
+        }
+
+        # Clear all current icons from the panel
+        $panel.Controls.Clear()
+        $global:entries.Clear()
+
+        # Try to reload from backup if available
+        $documents = [Environment]::GetFolderPath("MyDocuments")
+        $backupPath = [System.IO.Path]::Combine($documents, "launcher_backup.json")
+
+        if (Test-Path $backupPath) {
+            $data = Get-Content $backupPath -Raw | ConvertFrom-Json
+            if ($data.Entries) {
+                foreach ($e in $data.Entries) {
+                    Add-LauncherIcon $e.Path $e.Name
+                }
+            }
+        }
+
+        [System.Windows.Forms.MessageBox]::Show("Launcher refreshed successfully!","Refreshed","OK","Information")
+
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to refresh launcher: $_","Error","OK","Error")
+    }
+})
+
 
     # Save dark mode setting
     Save-Entries
@@ -590,4 +629,3 @@ if (Test-Path $jsonPath) {
 }
 # ====== RUN FORM ======
 [void]$form.ShowDialog()
-
